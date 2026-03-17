@@ -1,0 +1,418 @@
+effect module Share where { command = MyCmd } exposing
+    ( ShareResult(..)
+    , ShareError(..)
+    , ShareData
+    , ShareDataWithFiles
+    , ShareSupport
+    , share
+    , shareFiles
+    , shareUrl
+    , shareText
+    , isAvailable
+    , getSupport
+    , canShare
+    , canShareFiles
+    , shareResultToString
+    , shareErrorToString
+    , isShared
+    , isCancelled
+    , isFailed
+    , getError
+    , MyCmd(..)
+    , cmdMap
+    )
+
+
+{-| Web Share API wrapper for native sharing of text, URLs, and files
+via the operating system's share sheet.
+
+The Web Share API invokes the OS native sharing mechanism, allowing
+users to share content to any installed app without the web application
+needing to integrate with each platform individually.
+
+# Types
+@docs ShareResult, ShareError, ShareData, ShareDataWithFiles, ShareSupport
+
+# Sharing
+@docs share, shareFiles, shareUrl, shareText
+
+# Feature Detection
+@docs isAvailable, getSupport, canShare, canShareFiles
+
+# Helpers
+@docs shareResultToString, shareErrorToString, isShared, isCancelled, isFailed, getError
+
+-}
+
+
+import Capability exposing (Available(..), UserActivated(..))
+import Process
+import Task exposing (Task)
+import File
+import Json.Decode
+
+foreign import javascript "external/share.js" as ShareFFI
+
+
+-- TYPES
+
+
+{-| Data to share via the OS share sheet.
+
+At least one of title, text, or url must be provided. All fields are
+optional individually, but an empty ShareData will fail.
+-}
+type alias ShareData =
+    { title : Maybe String
+    , text : Maybe String
+    , url : Maybe String
+    }
+
+
+{-| Data to share including files.
+
+Extends ShareData with a list of files. File sharing requires the
+browser to support navigator.canShare() with files.
+-}
+type alias ShareDataWithFiles =
+    { title : Maybe String
+    , text : Maybe String
+    , url : Maybe String
+    , files : List File.File
+    }
+
+
+{-| Result of a share attempt. -}
+type ShareResult
+    = Shared
+    | Cancelled
+    | Failed ShareError
+
+
+{-| Errors that can occur when sharing. -}
+type ShareError
+    = NotAllowedError
+    | NotSupportedError
+    | DataError String
+    | AbortError
+    | UnknownError String
+
+
+{-| What sharing capabilities are available in this browser. -}
+type alias ShareSupport =
+    { textAndUrl : Bool
+    , files : Bool
+    }
+
+
+-- COMMANDS
+
+
+{-| Share text and/or a URL via the OS share sheet.
+
+Requires user activation (must be called in response to a click,
+keypress, etc.). The returned Cmd triggers the share sheet and reports
+the result.
+
+    update msg model =
+        case msg of
+            ShareArticle activation article ->
+                ( model
+                , Share.share activation
+                    { title = Just article.title
+                    , text = Just article.summary
+                    , url = Just article.url
+                    }
+                    ShareResult
+                )
+-}
+share : UserActivated -> ShareData -> (ShareResult -> msg) -> Cmd msg
+share _ data toMsg =
+    command (ShareCmd data toMsg)
+
+
+{-| Share content including files.
+
+Requires user activation. Not all browsers support file sharing. Use
+canShareFiles to check before showing a file share button.
+-}
+shareFiles : UserActivated -> ShareDataWithFiles -> (ShareResult -> msg) -> Cmd msg
+shareFiles _ data toMsg =
+    command (ShareFilesCmd data toMsg)
+
+
+{-| Share a URL with a title. Convenience for the common case.
+
+Requires user activation.
+
+    Share.shareUrl activation "Check this out" "https://example.com" ShareResult
+-}
+shareUrl : UserActivated -> String -> String -> (ShareResult -> msg) -> Cmd msg
+shareUrl activation title url toMsg =
+    share activation
+        { title = Just title
+        , text = Nothing
+        , url = Just url
+        }
+        toMsg
+
+
+{-| Share text only. Convenience for the common case.
+
+Requires user activation.
+
+    Share.shareText activation "Hello from Canopy!" ShareResult
+-}
+shareText : UserActivated -> String -> (ShareResult -> msg) -> Cmd msg
+shareText activation text toMsg =
+    share activation
+        { title = Nothing
+        , text = Just text
+        , url = Nothing
+        }
+        toMsg
+
+
+-- FEATURE DETECTION
+
+
+{-| Check whether the Web Share API is available in this browser.
+
+Returns an Available value indicating the level of support.
+Use this to conditionally show share buttons in your UI.
+
+    Share.isAvailable
+        |> Task.perform GotAvailability
+-}
+isAvailable : Task Never Available
+isAvailable =
+    ShareFFI.isAvailable ()
+
+
+{-| Check what sharing capabilities are available.
+
+Returns detailed support information including file sharing.
+
+    Share.getSupport
+        |> Task.perform GotShareSupport
+-}
+getSupport : Task Never ShareSupport
+getSupport =
+    ShareFFI.getSupport
+
+
+{-| Check if specific data can be shared.
+
+Uses navigator.canShare() to validate the share data before attempting
+to share. Useful for checking file type support.
+
+    Share.canShare
+        { title = Just "Photo"
+        , text = Nothing
+        , url = Nothing
+        }
+        |> Task.perform GotCanShare
+-}
+canShare : ShareData -> Task Never Bool
+canShare data =
+    ShareFFI.canShareData data
+
+
+{-| Check if files can be shared in this browser.
+
+    Share.canShareFiles
+        |> Task.perform GotCanShareFiles
+-}
+canShareFiles : Task Never Bool
+canShareFiles =
+    ShareFFI.canShareFilesCheck
+
+
+-- EFFECT MANAGER
+
+
+type MyCmd msg
+    = ShareCmd ShareData (ShareResult -> msg)
+    | ShareFilesCmd ShareDataWithFiles (ShareResult -> msg)
+
+
+cmdMap : (a -> b) -> MyCmd a -> MyCmd b
+cmdMap func cmd =
+    case cmd of
+        ShareCmd data toMsg ->
+            ShareCmd data (toMsg >> func)
+
+        ShareFilesCmd data toMsg ->
+            ShareFilesCmd data (toMsg >> func)
+
+
+type alias State =
+    {}
+
+
+init : Task Never State
+init =
+    Task.succeed {}
+
+
+onEffects : Platform.Router msg Never -> List (MyCmd msg) -> State -> Task Never State
+onEffects router cmds state =
+    processCmds router cmds state
+
+
+processCmds : Platform.Router msg Never -> List (MyCmd msg) -> State -> Task Never State
+processCmds router cmds state =
+    case cmds of
+        [] ->
+            Task.succeed state
+
+        cmd :: rest ->
+            processCmd router cmd state
+                |> Task.andThen (\s -> processCmds router rest s)
+
+
+extractShareData : ShareDataWithFiles -> ShareData
+extractShareData data =
+    { title = data.title
+    , text = data.text
+    , url = data.url
+    }
+
+
+encodeFiles : List File.File -> Json.Decode.Value
+encodeFiles files =
+    ShareFFI.encodeFileList files
+
+
+processCmd : Platform.Router msg Never -> MyCmd msg -> State -> Task Never State
+processCmd router cmd state =
+    case cmd of
+        ShareCmd data toMsg ->
+            Process.spawn
+                (ShareFFI.shareData data
+                    |> Task.andThen (\result -> Platform.sendToApp router (toMsg result))
+                )
+                |> Task.andThen (\_ -> Task.succeed state)
+
+        ShareFilesCmd data toMsg ->
+            Process.spawn
+                (ShareFFI.shareDataWithFiles (extractShareData data) (encodeFiles data.files)
+                    |> Task.andThen (\result -> Platform.sendToApp router (toMsg result))
+                )
+                |> Task.andThen (\_ -> Task.succeed state)
+
+
+onSelfMsg : Platform.Router msg Never -> Never -> State -> Task Never State
+onSelfMsg _ _ state =
+    Task.succeed state
+
+
+-- HELPERS
+
+
+{-| Convert a ShareResult to a human-readable string.
+
+    shareResultToString Shared == "Shared"
+    shareResultToString Cancelled == "Cancelled"
+    shareResultToString (Failed NotSupportedError) == "Failed: Web Share API not supported"
+-}
+shareResultToString : ShareResult -> String
+shareResultToString result =
+    case result of
+        Shared ->
+            "Shared"
+
+        Cancelled ->
+            "Cancelled"
+
+        Failed err ->
+            "Failed: " ++ shareErrorToString err
+
+
+{-| Convert a ShareError to a human-readable string.
+
+    shareErrorToString NotAllowedError == "Not allowed (requires user gesture and HTTPS)"
+    shareErrorToString NotSupportedError == "Web Share API not supported"
+    shareErrorToString (DataError "empty") == "Invalid share data: empty"
+    shareErrorToString AbortError == "Share aborted by system"
+    shareErrorToString (UnknownError "oops") == "Unknown error: oops"
+-}
+shareErrorToString : ShareError -> String
+shareErrorToString error =
+    case error of
+        NotAllowedError ->
+            "Not allowed (requires user gesture and HTTPS)"
+
+        NotSupportedError ->
+            "Web Share API not supported"
+
+        DataError msg ->
+            "Invalid share data: " ++ msg
+
+        AbortError ->
+            "Share aborted by system"
+
+        UnknownError msg ->
+            "Unknown error: " ++ msg
+
+
+{-| Check if a ShareResult represents a successful share.
+
+    isShared Shared == True
+    isShared Cancelled == False
+    isShared (Failed NotSupportedError) == False
+-}
+isShared : ShareResult -> Bool
+isShared result =
+    case result of
+        Shared ->
+            True
+
+        _ ->
+            False
+
+
+{-| Check if a ShareResult represents a user cancellation.
+
+    isCancelled Cancelled == True
+    isCancelled Shared == False
+-}
+isCancelled : ShareResult -> Bool
+isCancelled result =
+    case result of
+        Cancelled ->
+            True
+
+        _ ->
+            False
+
+
+{-| Check if a ShareResult represents a failure.
+
+    isFailed (Failed NotSupportedError) == True
+    isFailed Shared == False
+-}
+isFailed : ShareResult -> Bool
+isFailed result =
+    case result of
+        Failed _ ->
+            True
+
+        _ ->
+            False
+
+
+{-| Extract the error from a ShareResult, if any.
+
+    getError (Failed NotSupportedError) == Just NotSupportedError
+    getError Shared == Nothing
+    getError Cancelled == Nothing
+-}
+getError : ShareResult -> Maybe ShareError
+getError result =
+    case result of
+        Failed err ->
+            Just err
+
+        _ ->
+            Nothing

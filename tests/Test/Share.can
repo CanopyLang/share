@@ -1,0 +1,307 @@
+module Test.Share exposing (main, tests)
+
+import Basics exposing (..)
+import Capability exposing (UserActivated(..))
+import Maybe exposing (..)
+import Share
+    exposing
+        ( ShareResult(..)
+        , ShareError(..)
+        )
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+tests : Test
+tests =
+    describe "Share"
+        [ shareResultToStringTests
+        , shareErrorToStringTests
+        , isSharedTests
+        , isCancelledTests
+        , isFailedTests
+        , getErrorTests
+        , shareUrlTests
+        , shareTextTests
+        ]
+
+
+
+-- SHARE RESULT TO STRING
+
+
+shareResultToStringTests : Test
+shareResultToStringTests =
+    describe "shareResultToString"
+        [ test "converts Shared to string" <|
+            \() ->
+                Share.shareResultToString Shared
+                    |> Expect.equal "Shared"
+        , test "converts Cancelled to string" <|
+            \() ->
+                Share.shareResultToString Cancelled
+                    |> Expect.equal "Cancelled"
+        , test "converts Failed NotAllowedError to string" <|
+            \() ->
+                Share.shareResultToString (Failed NotAllowedError)
+                    |> Expect.equal "Failed: Not allowed (requires user gesture and HTTPS)"
+        , test "converts Failed NotSupportedError to string" <|
+            \() ->
+                Share.shareResultToString (Failed NotSupportedError)
+                    |> Expect.equal "Failed: Web Share API not supported"
+        , test "converts Failed DataError to string" <|
+            \() ->
+                Share.shareResultToString (Failed (DataError "empty data"))
+                    |> Expect.equal "Failed: Invalid share data: empty data"
+        , test "converts Failed AbortError to string" <|
+            \() ->
+                Share.shareResultToString (Failed AbortError)
+                    |> Expect.equal "Failed: Share aborted by system"
+        , test "converts Failed UnknownError to string" <|
+            \() ->
+                Share.shareResultToString (Failed (UnknownError "something broke"))
+                    |> Expect.equal "Failed: Unknown error: something broke"
+        , test "converts Failed DataError with empty message" <|
+            \() ->
+                Share.shareResultToString (Failed (DataError ""))
+                    |> Expect.equal "Failed: Invalid share data: "
+        , test "converts Failed UnknownError with empty message" <|
+            \() ->
+                Share.shareResultToString (Failed (UnknownError ""))
+                    |> Expect.equal "Failed: Unknown error: "
+        ]
+
+
+
+-- SHARE ERROR TO STRING
+
+
+shareErrorToStringTests : Test
+shareErrorToStringTests =
+    describe "shareErrorToString"
+        [ test "converts NotAllowedError" <|
+            \() ->
+                Share.shareErrorToString NotAllowedError
+                    |> Expect.equal "Not allowed (requires user gesture and HTTPS)"
+        , test "converts NotSupportedError" <|
+            \() ->
+                Share.shareErrorToString NotSupportedError
+                    |> Expect.equal "Web Share API not supported"
+        , test "converts DataError with message" <|
+            \() ->
+                Share.shareErrorToString (DataError "no fields")
+                    |> Expect.equal "Invalid share data: no fields"
+        , test "converts AbortError" <|
+            \() ->
+                Share.shareErrorToString AbortError
+                    |> Expect.equal "Share aborted by system"
+        , test "converts UnknownError with message" <|
+            \() ->
+                Share.shareErrorToString (UnknownError "network issue")
+                    |> Expect.equal "Unknown error: network issue"
+        , test "converts DataError with empty message" <|
+            \() ->
+                Share.shareErrorToString (DataError "")
+                    |> Expect.equal "Invalid share data: "
+        , test "converts UnknownError with empty message" <|
+            \() ->
+                Share.shareErrorToString (UnknownError "")
+                    |> Expect.equal "Unknown error: "
+        ]
+
+
+
+-- IS SHARED
+
+
+isSharedTests : Test
+isSharedTests =
+    describe "isShared"
+        [ test "returns True for Shared" <|
+            \() ->
+                Share.isShared Shared
+                    |> Expect.equal True
+        , test "returns False for Cancelled" <|
+            \() ->
+                Share.isShared Cancelled
+                    |> Expect.equal False
+        , test "returns False for Failed" <|
+            \() ->
+                Share.isShared (Failed NotSupportedError)
+                    |> Expect.equal False
+        , test "returns False for Failed with DataError" <|
+            \() ->
+                Share.isShared (Failed (DataError "bad"))
+                    |> Expect.equal False
+        ]
+
+
+
+-- IS CANCELLED
+
+
+isCancelledTests : Test
+isCancelledTests =
+    describe "isCancelled"
+        [ test "returns True for Cancelled" <|
+            \() ->
+                Share.isCancelled Cancelled
+                    |> Expect.equal True
+        , test "returns False for Shared" <|
+            \() ->
+                Share.isCancelled Shared
+                    |> Expect.equal False
+        , test "returns False for Failed" <|
+            \() ->
+                Share.isCancelled (Failed AbortError)
+                    |> Expect.equal False
+        ]
+
+
+
+-- IS FAILED
+
+
+isFailedTests : Test
+isFailedTests =
+    describe "isFailed"
+        [ test "returns True for Failed NotAllowedError" <|
+            \() ->
+                Share.isFailed (Failed NotAllowedError)
+                    |> Expect.equal True
+        , test "returns True for Failed NotSupportedError" <|
+            \() ->
+                Share.isFailed (Failed NotSupportedError)
+                    |> Expect.equal True
+        , test "returns True for Failed DataError" <|
+            \() ->
+                Share.isFailed (Failed (DataError "msg"))
+                    |> Expect.equal True
+        , test "returns True for Failed AbortError" <|
+            \() ->
+                Share.isFailed (Failed AbortError)
+                    |> Expect.equal True
+        , test "returns True for Failed UnknownError" <|
+            \() ->
+                Share.isFailed (Failed (UnknownError "msg"))
+                    |> Expect.equal True
+        , test "returns False for Shared" <|
+            \() ->
+                Share.isFailed Shared
+                    |> Expect.equal False
+        , test "returns False for Cancelled" <|
+            \() ->
+                Share.isFailed Cancelled
+                    |> Expect.equal False
+        ]
+
+
+
+-- GET ERROR
+
+
+getErrorTests : Test
+getErrorTests =
+    describe "getError"
+        [ test "returns Just error for Failed" <|
+            \() ->
+                Share.getError (Failed NotAllowedError)
+                    |> Expect.equal (Just NotAllowedError)
+        , test "returns Just DataError for Failed DataError" <|
+            \() ->
+                Share.getError (Failed (DataError "invalid"))
+                    |> Expect.equal (Just (DataError "invalid"))
+        , test "returns Just UnknownError for Failed UnknownError" <|
+            \() ->
+                Share.getError (Failed (UnknownError "oops"))
+                    |> Expect.equal (Just (UnknownError "oops"))
+        , test "returns Nothing for Shared" <|
+            \() ->
+                Share.getError Shared
+                    |> Expect.equal Nothing
+        , test "returns Nothing for Cancelled" <|
+            \() ->
+                Share.getError Cancelled
+                    |> Expect.equal Nothing
+        , test "returns Just AbortError for Failed AbortError" <|
+            \() ->
+                Share.getError (Failed AbortError)
+                    |> Expect.equal (Just AbortError)
+        , test "returns Just NotSupportedError for Failed NotSupportedError" <|
+            \() ->
+                Share.getError (Failed NotSupportedError)
+                    |> Expect.equal (Just NotSupportedError)
+        ]
+
+
+
+-- SHARE URL AND SHARE TEXT (verify they compile and are callable)
+
+
+shareUrlTests : Test
+shareUrlTests =
+    describe "shareUrl"
+        [ test "shareUrl constructs a Cmd (type check)" <|
+            \() ->
+                let
+                    _ = Share.shareUrl UserActivated "Title" "https://example.com" identity
+                in
+                Expect.pass
+        , test "shareUrl with empty title" <|
+            \() ->
+                let
+                    _ = Share.shareUrl UserActivated "" "https://example.com" identity
+                in
+                Expect.pass
+        , test "shareUrl with empty url" <|
+            \() ->
+                let
+                    _ = Share.shareUrl UserActivated "Title" "" identity
+                in
+                Expect.pass
+        ]
+
+
+shareTextTests : Test
+shareTextTests =
+    describe "shareText"
+        [ test "shareText constructs a Cmd (type check)" <|
+            \() ->
+                let
+                    _ = Share.shareText UserActivated "Hello world" identity
+                in
+                Expect.pass
+        , test "shareText with empty string" <|
+            \() ->
+                let
+                    _ = Share.shareText UserActivated "" identity
+                in
+                Expect.pass
+        , test "share constructs a Cmd (type check)" <|
+            \() ->
+                let
+                    _ = Share.share UserActivated
+                            { title = Just "Test"
+                            , text = Just "Hello"
+                            , url = Just "https://example.com"
+                            }
+                            identity
+                in
+                Expect.pass
+        , test "share with all Nothing fields" <|
+            \() ->
+                let
+                    _ = Share.share UserActivated
+                            { title = Nothing
+                            , text = Nothing
+                            , url = Nothing
+                            }
+                            identity
+                in
+                Expect.pass
+        ]
