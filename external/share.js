@@ -179,7 +179,13 @@ var shareDataWithFiles = F2(function(data, filesValue)
  */
 function encodeFileList(fileList)
 {
-	return _List_toArray(fileList);
+	var wrapped = _List_toArray(fileList);
+	var native = [];
+	for (var i = 0; i < wrapped.length; i++)
+	{
+		native.push(wrapped[i].a);
+	}
+	return native;
 }
 
 
