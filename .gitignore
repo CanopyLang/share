@@ -1,0 +1,7 @@
+canopy-stuff/
+output/
+artifacts.dat
+*.elco
+node_modules/
+.DS_Store
+*.log
